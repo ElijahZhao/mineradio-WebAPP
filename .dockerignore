@@ -1,0 +1,15 @@
+.git
+.gitignore
+node_modules
+dist
+updates
+backups
+.cookie
+.qq-cookie
+*.log
+*.tmp
+.env
+.env.*
+README.deploy.md
+Dockerfile
+.dockerignore

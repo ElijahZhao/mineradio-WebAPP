@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-*/
+out/
+
+# User data and private state
+.cookie
+.qq-cookie
+updates/
+backups/
+*.log
+*.tmp
+*.cache
+.env
+.env.*
+
+# Local development noise
+.DS_Store
+Thumbs.db
+npm-debug.log*
+
+# Screenshots and transient verification artifacts
+.playwright-cli/
+output/
+tmp/
+*.png.tmp
+verification/
+screenshots/

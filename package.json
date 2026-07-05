@@ -1,0 +1,17 @@
+{
+  "name": "mineradio-web",
+  "productName": "Mineradio Web",
+  "version": "1.1.1-web",
+  "description": "沉浸式音乐播放器 Web 版 — 融合天气电台、歌词舞台、粒子视觉和 3D 歌单架。",
+  "author": "Mineradio",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "start:prod": "HOST=0.0.0.0 PORT=3000 node server.js"
+  },
+  "dependencies": {
+    "mpg123-decoder": "^1.0.3",
+    "NeteaseCloudMusicApi": "^4.32.0"
+  }
+}
