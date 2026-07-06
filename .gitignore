@@ -29,3 +29,8 @@ tmp/
 *.png.tmp
 verification/
 screenshots/
+
+# Test coverage
+coverage/
+coverage.lcov
+.nyc_output/

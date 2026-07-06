@@ -55,17 +55,28 @@ const { fileURLToPath } = require('url');
 const { analyzePodcastDjStream, analyzePodcastDjIntro } = require('./dj-analyzer');
 
 // ---------- SSRF 防护：代理目标白名单 ----------
-const PROXY_HOST_WHITELIST = /^(p[0-9]+\.)?music\.126\.net|music\.163\.com|[^/]*\.qq\.com\.?$|y\.qq\.com\.?$/i;
+// 正则整体锚定 ^(...)$，防止子串绕过（如 music.163.com.evil.com）
+const PROXY_HOST_WHITELIST = /^((p[0-9]+\.)?music\.126\.net|music\.163\.com|[^/]*\.qq\.com|y\.qq\.com)$/i;
+// 是否在反向代理后面（只有此时才信任 X-Forwarded-For）
+const TRUST_PROXY = process.env.TRUST_PROXY === '1' || process.env.NODE_ENV === 'production';
 function isAllowedProxyTarget(u) {
   try {
     const parsed = new URL(u);
+    // 仅允许 http/https 协议
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
     const h = parsed.hostname.toLowerCase();
-    // 拒绝私网 / 回环 / 链路本地
-    if (/^(127\.|10\.|192\.168\.|169\.254\.|0\.|localhost|::1|fe80:)/i.test(h)) return false;
-    // 拒绝云元数据端点
-    if (h === '169.254.169.254') return false;
+    // 拒绝私网 / 回环 / 链路本地 / 元数据端点
+    if (/^(127\.|10\.|192\.168\.|169\.254\.|0\.|localhost|::1|fe80:|fc00:|fd)/i.test(h)) return false;
+    if (h === '169.254.169.254' || h === 'metadata.google.internal') return false;
     return PROXY_HOST_WHITELIST.test(h);
   } catch { return false; }
+}
+// 获取真实客户端 IP（仅在反向代理后才信任 X-Forwarded-For）
+function getClientIp(req) {
+  if (TRUST_PROXY && req.headers['x-forwarded-for']) {
+    return req.headers['x-forwarded-for'].split(',')[0].trim();
+  }
+  return req.socket.remoteAddress || 'unknown';
 }
 
 // ---------- 音频 URL 元数据缓存 (W15) ----------
@@ -95,6 +106,70 @@ const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const BEATMAP_CACHE_DIR = process.env.MINERADIO_BEAT_CACHE_DIR || path.join(os.tmpdir(), 'mineradio-beatmaps');
+
+// ---------- v5: 节拍缓存磁盘持久化（之前仅有调用无定义） ----------
+const BEAT_CACHE_ALLOWED = process.env.MINERADIO_BEAT_CACHE_DIR !== undefined; // 仅显式配置时启用磁盘缓存
+const beatCacheMemory = new Map(); // 内存级缓存降级
+const BEAT_CACHE_MEMORY_MAX = 50;
+
+function beatCacheRootInfo() {
+  const dir = BEATMAP_CACHE_DIR;
+  const allowed = BEAT_CACHE_ALLOWED;
+  let available = false;
+  if (allowed) {
+    try { fs.mkdirSync(dir, { recursive: true }); available = fs.existsSync(dir); } catch { available = false; }
+  }
+  return { allowed, available, dir, drive: path.parse(dir).root };
+}
+
+async function readBeatMapCache(key) {
+  if (!key || key.length > 200) return null;
+  // 内存缓存
+  const memEntry = beatCacheMemory.get(key);
+  if (memEntry) return memEntry;
+  // 磁盘缓存
+  const info = beatCacheRootInfo();
+  if (info.allowed && info.available) {
+    try {
+      const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const filePath = path.join(info.dir, safeKey + '.json');
+      const data = await fs.promises.readFile(filePath, 'utf8');
+      const entry = JSON.parse(data);
+      entry.savedAt = entry.savedAt || 0;
+      return entry;
+    } catch (err) {
+      const e = new Error('BEAT_CACHE_READ_FAILED');
+      e.code = err.code || 'READ_ERROR';
+      e.info = info;
+      throw e;
+    }
+  }
+  return null;
+}
+
+async function writeBeatMapCache(body) {
+  if (!body || !body.key) return { ok: false, reason: 'NO_KEY' };
+  const key = String(body.key).slice(0, 200);
+  // 内存缓存
+  if (beatCacheMemory.size >= BEAT_CACHE_MEMORY_MAX) {
+    const firstKey = beatCacheMemory.keys().next().value;
+    beatCacheMemory.delete(firstKey);
+  }
+  beatCacheMemory.set(key, { key, map: body.map, meta: body.meta || {}, savedAt: Date.now() });
+  // 磁盘缓存
+  const info = beatCacheRootInfo();
+  if (info.allowed && info.available) {
+    try {
+      const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const filePath = path.join(info.dir, safeKey + '.json');
+      await fs.promises.writeFile(filePath, JSON.stringify({ key, map: body.map, meta: body.meta || {}, savedAt: Date.now() }));
+    } catch (err) {
+      return { ok: true, disk: false, reason: err.code || 'WRITE_FAILED', key };
+    }
+    return { ok: true, disk: true, key };
+  }
+  return { ok: true, disk: false, mode: 'memory-only', key };
+}
 const APP_PACKAGE = readPackageInfo();
 const APP_VERSION = process.env.MINERADIO_VERSION || APP_PACKAGE.version || '0.9.11';
 const OPEN_METEO_FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
@@ -216,7 +291,8 @@ function cleanupExpiredSessions() {
 }
 
 function sessionCookieHeader(sid) {
-  return `mineradio_sid=${sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`;
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  return `mineradio_sid=${sid}; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=2592000`;
 }
 
 function getUserCookie() {
@@ -247,9 +323,13 @@ function serveStatic(res, filePath) {
   fs.readFile(filePath, (err, data) => {
     if (err) { res.writeHead(404); res.end('Not Found'); return; }
     const headers = { 'Content-Type': MIME[ext] || 'text/plain' };
-    // vendor/ 和 assets/ 是带 hash 的静态资源，长期缓存
+    // vendor/ 和 assets/ 是带版本号的静态资源，长期缓存
     if (filePath.includes('/vendor/') || filePath.includes('/assets/')) {
       headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+    }
+    // HTML 页面：no-cache，确保用户拿到最新版本
+    if (ext === '.html' || ext === '') {
+      headers['Cache-Control'] = 'no-cache, must-revalidate';
     }
     res.writeHead(200, headers);
     res.end(data);
@@ -2214,7 +2294,7 @@ const server = http.createServer(async (req, res) => {
   totalRequests++;
   activeRequests++;
   res.on('close', () => { activeRequests = Math.max(0, activeRequests - 1); });
-  const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown').split(',')[0].trim();
+  const clientIp = getClientIp(req);
   if (!checkRateLimit(clientIp)) {
     errorCount++;
     res.writeHead(429, { 'Content-Type': 'application/json' });
@@ -2227,7 +2307,7 @@ const server = http.createServer(async (req, res) => {
 
   // 静态资源直接返回，不走 session（避免为每个 CSS/JS/图片创建 session）
   if (pn === '/favicon.ico') {
-    serveStatic(res, path.join(__dirname, 'build', 'icon.ico'));
+    serveStatic(res, path.join(__dirname, 'public', 'icons', 'favicon.ico'));
     return;
   }
   if (!pn.startsWith('/api/')) {
@@ -2258,7 +2338,12 @@ const server = http.createServer(async (req, res) => {
   if (pn === '/api/log-client-error') {
     try {
       var body = '';
-      req.on('data', function(chunk){ body += chunk; });
+      var bodySize = 0;
+      req.on('data', function(chunk){
+        bodySize += chunk.length;
+        if (bodySize > 64 * 1024) { req.destroy(); return; } // 64KB 上限
+        body += chunk;
+      });
       req.on('end', function() {
         try {
           var err = JSON.parse(body);
@@ -2273,7 +2358,12 @@ const server = http.createServer(async (req, res) => {
   if (pn === '/api/log-csp-violation') {
     try {
       var cspBody = '';
-      req.on('data', function(chunk){ cspBody += chunk; });
+      var cspBodySize = 0;
+      req.on('data', function(chunk){
+        cspBodySize += chunk.length;
+        if (cspBodySize > 64 * 1024) { req.destroy(); return; } // 64KB 上限
+        cspBody += chunk;
+      });
       req.on('end', function() {
         try {
           var report = JSON.parse(cspBody);
@@ -2395,8 +2485,8 @@ const server = http.createServer(async (req, res) => {
   // ---------- 搜索 ----------
   if (pn === '/api/search') {
     try {
-      const kw    = url.searchParams.get('keywords') || '';
-      const limit = parseInt(url.searchParams.get('limit') || '20');
+      const kw    = (url.searchParams.get('keywords') || '').slice(0, 200);
+      const limit = Math.max(1, Math.min(50, parseInt(url.searchParams.get('limit') || '20', 10) || 20));
       const songs = await handleSearch(kw, limit);
       sendJSON(res, { songs });
     } catch (err) { console.error('[Search]', err); sendJSON(res, { error: err.message, songs: [] }, 500); }
@@ -2708,6 +2798,10 @@ const server = http.createServer(async (req, res) => {
       const durationSec = Math.max(0, Number(url.searchParams.get('duration') || 0) || 0);
       if (!audioUrl || !/^https?:\/\//i.test(audioUrl)) {
         sendJSON(res, { error: 'Invalid audio url' }, 400);
+        return;
+      }
+      if (!isAllowedProxyTarget(audioUrl)) {
+        sendJSON(res, { error: 'Audio URL host not in whitelist' }, 403);
         return;
       }
       console.log('[PodcastDjBeatmap] start', Math.round(durationSec || 0) + 's');
@@ -3235,6 +3329,14 @@ class SimpleCookieJar {
 const QR_LOGIN_JOBS = new Map(); // key -> { jar, ptLoginSig, qrsig, ptqrtoken, status, createdAt }
 const QR_LOGIN_TIMEOUT = 3 * 60 * 1000; // 3 分钟过期
 
+// v5: 定期清理过期的 QR 登录任务，防止内存泄漏
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of QR_LOGIN_JOBS) {
+    if (now - v.createdAt > QR_LOGIN_TIMEOUT) QR_LOGIN_JOBS.delete(k);
+  }
+}, 60 * 1000);
+
 async function qqMusicCreateQRLogin() {
   const jar = new SimpleCookieJar();
   const key = crypto.randomUUID();
@@ -3414,6 +3516,17 @@ server.on('upgrade', (req, socket, head) => {
     socket.destroy();
     return;
   }
+  // Origin 校验：拒绝跨站 WebSocket 连接（CSWSH 防护）
+  const origin = req.headers.origin;
+  if (origin) {
+    let allowed = false;
+    try {
+      const o = new URL(origin);
+      allowed = o.hostname === 'localhost' || o.hostname === '127.0.0.1' ||
+        (CORS_ALLOWED_ORIGINS.length > 0 && CORS_ALLOWED_ORIGINS.includes(origin));
+    } catch { /* invalid origin, block */ }
+    if (!allowed) { socket.destroy(); return; }
+  }
   const key = req.headers['sec-websocket-key'];
   if (!key) { socket.destroy(); return; }
   const accept = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
@@ -3449,9 +3562,16 @@ server.on('upgrade', (req, socket, head) => {
   wsSend(JSON.stringify({ type: 'welcome', online: wsClients.size }));
   wsBroadcastOnlineCount();
 
+  // v5 安全修复：限制帧缓冲区大小，防止内存耗尽 DoS
+  const MAX_WS_FRAME_SIZE = 1024 * 1024; // 1MB 单帧上限
   let frameBuffer = Buffer.alloc(0);
   socket.on('data', (chunk) => {
     frameBuffer = Buffer.concat([frameBuffer, chunk]);
+    // 总缓冲区上限：防止恶意客户端持续发送数据
+    if (frameBuffer.length > MAX_WS_FRAME_SIZE * 2) {
+      socket.destroy();
+      return;
+    }
     while (frameBuffer.length >= 2) {
       const b0 = frameBuffer[0];
       const b1 = frameBuffer[1];
@@ -3467,13 +3587,27 @@ server.on('upgrade', (req, socket, head) => {
         if (frameBuffer.length < 10) break;
         payloadLen = Number(frameBuffer.readBigUInt64BE(2));
         offset = 10;
+        // 拒绝超大 payload 声明
+        if (payloadLen > MAX_WS_FRAME_SIZE) {
+          socket.destroy();
+          return;
+        }
       }
       if (masked) {
         if (frameBuffer.length < offset + 4 + payloadLen) break;
         offset += 4;
       }
       if (frameBuffer.length < offset + payloadLen) break;
-      if (opcode === 8) { socket.end(); break; }
+      // v5: 响应客户端 ping (opcode 9) 返回 pong
+      if (opcode === 9) {
+        const pongHeader = Buffer.alloc(2);
+        pongHeader[0] = 0x8a;
+        pongHeader[1] = 0;
+        socket.write(pongHeader);
+      } else if (opcode === 8) {
+        socket.end();
+        break;
+      }
       frameBuffer = frameBuffer.slice(offset + payloadLen);
     }
   });
@@ -3497,34 +3631,52 @@ server.on('upgrade', (req, socket, head) => {
   }, 30000);
 });
 
-server.listen(PORT, HOST, () => {
-  console.log('======================================================');
-  console.log(' 粒子音乐可视化 v2  →  http://localhost:' + PORT);
-  console.log(' 登录态: 多用户会话隔离已启用');
-  console.log(' Session清理: 每10分钟清理7天未访问的会话');
-  console.log('======================================================');
-});
-
-// 每10分钟清理过期session
-setInterval(cleanupExpiredSessions, 10 * 60 * 1000);
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('[Server] SIGTERM received, shutting down gracefully...');
-  server.close(() => {
-    console.log('[Server] HTTP server closed');
-    process.exit(0);
+// ---------- 启动服务器 ----------
+if (require.main === module) {
+  server.listen(PORT, HOST, () => {
+    console.log('======================================================');
+    console.log(' 粒子音乐可视化 v2  →  http://localhost:' + PORT);
+    console.log(' 登录态: 多用户会话隔离已启用');
+    console.log(' Session清理: 每10分钟清理7天未访问的会话');
+    console.log('======================================================');
   });
-});
 
-// ---------- 全局未捕获异常处理 ----------
-process.on('unhandledRejection', (reason) => {
-  console.error('[UnhandledRejection]', reason && reason.stack ? reason.stack : reason);
-});
-process.on('uncaughtException', (err) => {
-  console.error('[UncaughtException]', err && err.stack ? err.stack : err);
-  // 严重错误：记录后退出，让进程管理器重启
-  process.exit(1);
-});
+  // 每10分钟清理过期session
+  setInterval(cleanupExpiredSessions, 10 * 60 * 1000);
 
+  // Graceful shutdown
+  process.on('SIGTERM', () => {
+    console.log('[Server] SIGTERM received, shutting down gracefully...');
+    // 关闭所有 WebSocket 连接
+    for (const ws of wsClients) {
+      try { ws.socket.end(); } catch (e) {}
+    }
+    wsClients.clear();
+    server.close(() => {
+      console.log('[Server] HTTP server closed');
+      process.exit(0);
+    });
+    // 超时强制退出
+    setTimeout(() => { process.exit(0); }, 5000);
+  });
+
+  // ---------- 全局未捕获异常处理 ----------
+  process.on('unhandledRejection', (reason) => {
+    console.error('[UnhandledRejection]', reason && reason.stack ? reason.stack : reason);
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[UncaughtException]', err && err.stack ? err.stack : err);
+    // 严重错误：记录后退出，让进程管理器重启
+    process.exit(1);
+  });
+} // end if (require.main === module)
+
+// ---------- 导出（供测试使用） ----------
 module.exports = server;
+module.exports.isAllowedProxyTarget = isAllowedProxyTarget;
+module.exports.getClientIp = getClientIp;
+module.exports.sessionCookieHeader = sessionCookieHeader;
+module.exports.beatCacheRootInfo = beatCacheRootInfo;
+module.exports.readBeatMapCache = readBeatMapCache;
+module.exports.writeBeatMapCache = writeBeatMapCache;
+module.exports.PROXY_HOST_WHITELIST = PROXY_HOST_WHITELIST;

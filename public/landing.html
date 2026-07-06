@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Mineradio · 沉浸式音乐可视化播放器</title>
 <meta name="description" content="Mineradio 是一款沉浸式音乐可视化播放器，把天气电台、搜索播放、歌词舞台、粒子视觉和 3D 歌单架组合成一个更接近现场感的私人音乐空间。">
 <meta name="theme-color" content="#000000">
@@ -120,6 +120,12 @@ body.no-webgl #particle-canvas{display:none}
 </style>
 </head>
 <body>
+
+<noscript>
+  <div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#08090B;color:#00F5D4;font-family:sans-serif;font-size:18px;text-align:center;padding:20px;">
+    Mineradio 需要 JavaScript 才能运行。请在浏览器设置中启用 JavaScript。
+  </div>
+</noscript>
 
 <canvas id="particle-canvas"></canvas>
 <div id="css-stars"></div>
@@ -370,7 +376,6 @@ document.addEventListener('keydown', function(e) {
 // ========== Service Worker 注册 ==========
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').then(function(reg) {
-    console.log('[SW] registered');
   }).catch(function(err) {
     console.warn('[SW] failed:', err);
   });
