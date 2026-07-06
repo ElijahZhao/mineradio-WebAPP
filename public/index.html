@@ -6664,7 +6664,7 @@ function loadSkullParticleAsset() {
     skullParticleAsset.failed = true;
     return Promise.resolve(null);
   }
-  skullParticleAsset.promise = fetch('assets/skull-decimation-points.bin?v=regular-surface-teeth-soften-20260621', { cache: 'reload' })
+  skullParticleAsset.promise = fetch('/assets/skull-decimation-points.bin?v=regular-surface-teeth-soften-20260621', { cache: 'reload' })
     .then(function(res){
       if (!res.ok) throw new Error('skull asset ' + res.status);
       return res.arrayBuffer();

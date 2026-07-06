@@ -50,8 +50,6 @@ const fs   = require('fs');
 const os   = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { once } = require('events');
-const { fileURLToPath } = require('url');
 const { analyzePodcastDjStream, analyzePodcastDjIntro } = require('./dj-analyzer');
 
 // ---------- SSRF 防护：代理目标白名单 ----------
@@ -150,6 +148,10 @@ async function readBeatMapCache(key) {
 async function writeBeatMapCache(body) {
   if (!body || !body.key) return { ok: false, reason: 'NO_KEY' };
   const key = String(body.key).slice(0, 200);
+  // v5: 限制单个条目大小，防止内存耗尽
+  const MAX_BEATMAP_ENTRY_SIZE = 2 * 1024 * 1024; // 2MB
+  const entrySize = JSON.stringify(body.map || {}).length + JSON.stringify(body.meta || {}).length;
+  if (entrySize > MAX_BEATMAP_ENTRY_SIZE) return { ok: false, reason: 'ENTRY_TOO_LARGE' };
   // 内存缓存
   if (beatCacheMemory.size >= BEAT_CACHE_MEMORY_MAX) {
     const firstKey = beatCacheMemory.keys().next().value;
@@ -2263,12 +2265,7 @@ function checkRateLimit(ip) {
   record.count++;
   return true;
 }
-setInterval(function() {
-  const now = Date.now();
-  for (const [ip, record] of rateLimits) {
-    if (record.resetAt < now) rateLimits.delete(ip);
-  }
-}, 60 * 1000);
+// 注意：限流清理 interval 移至 require.main 守卫内，避免测试时阻止退出
 
 // ====================================================================
 // ---------- CORS 白名单 ----------
@@ -3332,13 +3329,7 @@ class SimpleCookieJar {
 const QR_LOGIN_JOBS = new Map(); // key -> { jar, ptLoginSig, qrsig, ptqrtoken, status, createdAt }
 const QR_LOGIN_TIMEOUT = 3 * 60 * 1000; // 3 分钟过期
 
-// v5: 定期清理过期的 QR 登录任务，防止内存泄漏
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of QR_LOGIN_JOBS) {
-    if (now - v.createdAt > QR_LOGIN_TIMEOUT) QR_LOGIN_JOBS.delete(k);
-  }
-}, 60 * 1000);
+// v5: QR 登录清理 interval 移至 require.main 守卫内，避免测试时阻止退出
 
 async function qqMusicCreateQRLogin() {
   const jar = new SimpleCookieJar();
@@ -3603,15 +3594,19 @@ server.on('upgrade', (req, socket, head) => {
       if (frameBuffer.length < offset + payloadLen) break;
       // v5: 响应客户端 ping (opcode 9) 返回 pong
       if (opcode === 9) {
+        // 响应客户端 ping
         const pongHeader = Buffer.alloc(2);
         pongHeader[0] = 0x8a;
         pongHeader[1] = 0;
         socket.write(pongHeader);
+      } else if (opcode === 10) {
+        // 收到客户端 pong，清除等待标志
+        ws.awaitingPong = false;
       } else if (opcode === 8) {
         socket.end();
         break;
       }
-      frameBuffer = frameBuffer.slice(offset + payloadLen);
+      frameBuffer = Buffer.from(frameBuffer.slice(offset + payloadLen));
     }
   });
   socket.on('close', () => {
@@ -3624,7 +3619,18 @@ server.on('upgrade', (req, socket, head) => {
     if (ws.pingTimer) clearInterval(ws.pingTimer);
     wsBroadcastOnlineCount();
   });
+  // v5: pong 追踪 — 如果 2 次 ping 未收到 pong，认为连接已死，主动清理
+  ws.awaitingPong = false;
   ws.pingTimer = setInterval(() => {
+    if (ws.awaitingPong) {
+      // 上次 ping 未收到 pong，连接已死
+      try { socket.destroy(); } catch (e) {}
+      wsClients.delete(ws);
+      clearInterval(ws.pingTimer);
+      wsBroadcastOnlineCount();
+      return;
+    }
+    ws.awaitingPong = true;
     try {
       const header = Buffer.alloc(2);
       header[0] = 0x89;
@@ -3646,6 +3652,22 @@ if (require.main === module) {
 
   // 每10分钟清理过期session
   setInterval(cleanupExpiredSessions, 10 * 60 * 1000);
+
+  // v5: 限流 Map 定期清理
+  setInterval(function() {
+    const now = Date.now();
+    for (const [ip, record] of rateLimits) {
+      if (record.resetAt < now) rateLimits.delete(ip);
+    }
+  }, 60 * 1000);
+
+  // v5: QR 登录任务定期清理
+  setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of QR_LOGIN_JOBS) {
+      if (now - v.createdAt > QR_LOGIN_TIMEOUT) QR_LOGIN_JOBS.delete(k);
+    }
+  }, 60 * 1000);
 
   // Graceful shutdown
   process.on('SIGTERM', () => {
