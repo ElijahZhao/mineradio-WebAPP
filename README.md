@@ -9,6 +9,8 @@
 [![PWA](https://img.shields.io/badge/PWA-Ready-purple.svg)](public/manifest.json)
 [![Tests](https://img.shields.io/badge/Tests-32%20passed-brightgreen.svg)](tests/)
 
+**在线 Demo**: https://mineradio-webapp.onrender.com/
+
 **基于 [XxHuberrr/Mineradio](https://github.com/XxHuberrr/Mineradio) (GPL-3.0) 的 Web 移植**
 
 ---
