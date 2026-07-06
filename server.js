@@ -2248,11 +2248,12 @@ async function getLoginInfo() {
 // ====================================================================
 //  HTTP Server
 // ---------- 请求速率限制 ----------
+// 仅对 /api/ 路径限流，静态资源（CSS/JS/图片/HTML）不限
 const rateLimits = new Map();
 function checkRateLimit(ip) {
   const now = Date.now();
   const windowMs = 60 * 1000; // 1分钟
-  const limit = 120; // 每分钟120个请求
+  const limit = 300; // 每分钟300个API请求（Render 免费层多用户共享IP，需宽松）
   const record = rateLimits.get(ip);
   if (!record || record.resetAt < now) {
     rateLimits.set(ip, { count: 1, resetAt: now + windowMs });
@@ -2294,18 +2295,11 @@ const server = http.createServer(async (req, res) => {
   totalRequests++;
   activeRequests++;
   res.on('close', () => { activeRequests = Math.max(0, activeRequests - 1); });
-  const clientIp = getClientIp(req);
-  if (!checkRateLimit(clientIp)) {
-    errorCount++;
-    res.writeHead(429, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Too many requests' }));
-    return;
-  }
 
   const url = new URL(req.url, 'http://localhost:' + PORT);
   const pn = url.pathname;
 
-  // 静态资源直接返回，不走 session（避免为每个 CSS/JS/图片创建 session）
+  // 静态资源直接返回，不走 session 也不限流（避免页面加载时 CSS/JS 被拦截）
   if (pn === '/favicon.ico') {
     serveStatic(res, path.join(__dirname, 'public', 'icons', 'favicon.ico'));
     return;
@@ -2318,6 +2312,15 @@ const server = http.createServer(async (req, res) => {
     else filePath = pn;
     filePath = path.join(__dirname, 'public', filePath);
     serveStatic(res, filePath);
+    return;
+  }
+
+  // API 请求：速率限制（仅对 /api/ 路径，静态资源不受影响）
+  const clientIp = getClientIp(req);
+  if (!checkRateLimit(clientIp)) {
+    errorCount++;
+    res.writeHead(429, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Too many requests' }));
     return;
   }
 
