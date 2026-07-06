@@ -2231,7 +2231,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (!pn.startsWith('/api/')) {
-    let filePath = pn === '/' ? '/index.html' : pn;
+    // / → landing.html (初始页面), /app → index.html (播放器本体)
+    let filePath;
+    if (pn === '/') filePath = '/landing.html';
+    else if (pn === '/app') filePath = '/index.html';
+    else filePath = pn;
     filePath = path.join(__dirname, 'public', filePath);
     serveStatic(res, filePath);
     return;

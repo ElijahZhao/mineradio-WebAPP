@@ -6,10 +6,15 @@
 //   - /api/* → 不缓存，始终走网络
 // ====================================================================
 
-const SW_CACHE = 'mineradio-v1.1.1';
+const SW_CACHE = 'mineradio-v1.1.1-landing';
 const PRECACHE_URLS = [
   '/',
+  '/landing.html',
+  '/app',
   '/index.html',
+  '/manifest.json',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
   '/vendor/three.r128.min.js',
 ];
 
