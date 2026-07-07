@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="public/icons/icon-256.png" width="120" height="120" alt="Mineradio Logo">
+<img src="public/icons/icon-512.png" width="128" height="128" alt="Mineradio Logo">
 
 # Mineradio Web
 
