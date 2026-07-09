@@ -54,7 +54,7 @@ const { analyzePodcastDjStream, analyzePodcastDjIntro } = require('./dj-analyzer
 
 // ---------- SSRF 防护：代理目标白名单 ----------
 // 正则整体锚定 ^(...)$，防止子串绕过（如 music.163.com.evil.com）
-const PROXY_HOST_WHITELIST = /^((p[0-9]+\.)?music\.126\.net|music\.163\.com|[^/]*\.qq\.com|y\.qq\.com)$/i;
+const PROXY_HOST_WHITELIST = /^(((p[0-9]+|m[0-9]+)\.)?music\.126\.net|music\.163\.com|[^/]*\.qq\.com|y\.qq\.com)$/i;
 // 是否在反向代理后面（只有此时才信任 X-Forwarded-For）
 const TRUST_PROXY = process.env.TRUST_PROXY === '1' || process.env.NODE_ENV === 'production';
 function isAllowedProxyTarget(u) {
