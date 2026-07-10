@@ -16011,6 +16011,7 @@ function deactivateHomeWallpaperPreview(playback) {
   }
 }
 function switchPlaybackVisualToEmily() {
+  console.log('[PresetDiag] switchPlaybackVisualToEmily: homeVisualPresetActive=' + homeVisualPresetActive + ' fx.preset=' + fx.preset + ' playbackVisualPreset=' + playbackVisualPreset + ' defaults=' + fxDefaults.preset);
   if (homeVisualPresetActive) {
     deactivateHomeWallpaperPreview(true);
     return;
@@ -21337,6 +21338,7 @@ function tickPresetTransition() {
 }
 function setPreset(p, opts) {
   opts = opts || {};
+  console.log('[PresetDiag] setPreset p=' + p + ' prev=' + fx.preset + ' noSave=' + opts.noSave + ' skipTransition=' + opts.skipTransition);
   p = Math.max(0, Math.min(presetMeta.length - 1, Number(p) || 0));
   var prev = fx.preset;
   var changed = prev !== p;
