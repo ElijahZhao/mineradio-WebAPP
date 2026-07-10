@@ -3220,6 +3220,7 @@ const server = http.createServer(async (req, res) => {
       const cl  = resp.headers.get('content-length');
       const hdr = {
         'Content-Type': ct,
+        'Access-Control-Allow-Origin': '*',
         'Cross-Origin-Resource-Policy': 'cross-origin',
         'Cache-Control': 'public, max-age=86400',
       };
