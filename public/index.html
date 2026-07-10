@@ -9933,7 +9933,8 @@ function updateControlTrackInfo(song) {
 
 function applyCoverCanvas(cv, thumbSrc, opts) {
   opts = opts || {};
-  if (!cv || !coverApplyStillCurrent(opts)) return;
+  console.log('[CL] applyCoverCanvas cv=' + (cv ? cv.width+'x'+cv.height : 'null') + ' stillCurrent=' + coverApplyStillCurrent(opts));
+  if (!cv || !coverApplyStillCurrent(opts)) { console.warn('[CL] applyCoverCanvas SKIPPED'); return; }
   var token = ++coverProcessToken;
   if (opts.coverSource && opts.coverSourceKind) {
     currentCoverSource = { kind: opts.coverSourceKind, src: opts.coverSource };
@@ -12522,7 +12523,9 @@ function hideAIDepthChip() {
 
 function loadCoverFromUrl(directUrl, opts) {
   opts = opts || {};
+  console.log('[CL] loadCoverFromUrl url=' + String(directUrl||'').slice(0,90) + ' token=' + (opts.trackToken||'none') + ' curToken=' + trackSwitchToken + ' stillCurrent=' + coverApplyStillCurrent(opts));
   if (!directUrl || typeof directUrl !== 'string' || !/^https?:\/\//i.test(directUrl)) {
+    console.warn('[CL] REJECTED: invalid url');
     if (!coverApplyStillCurrent(opts)) return;
     currentCoverSource = null;
     coverProcessToken++;
@@ -18514,9 +18517,11 @@ async function playQueueAt(idx, opts) {
   markPlayPhase('cover-load');
   safePlaybackStep('cover-load', function(){
     var customCover = getCustomCoverForSong(song);
+    var coverUrl = song.cover ? coverUrlWithSize(song.cover, 400) : '';
+    console.log('[CL] cover-load step: song.cover=' + String(song.cover||'').slice(0,80) + ' coverUrl=' + String(coverUrl||'').slice(0,80) + ' customCover=' + (customCover ? 'yes' : 'no') + ' token=' + token);
     var coverOpts = { trackToken: token, deferHeavy: true, delay: firstVisualPlay ? 380 : 680, timeout: firstVisualPlay ? 1400 : 1900 };
     if (customCover) applyCoverDataUrl(customCover, coverOpts);
-    else loadCoverFromUrl(song.cover ? coverUrlWithSize(song.cover, 400) : '', coverOpts);
+    else loadCoverFromUrl(coverUrl, coverOpts);
   });
   safePlaybackStep('trial-banner-reset', function(){ document.getElementById('trial-banner').classList.remove('show'); });
   safePlaybackStep('show-loading', showLoading);
