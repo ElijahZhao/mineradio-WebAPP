@@ -12522,9 +12522,7 @@ function hideAIDepthChip() {
 
 function loadCoverFromUrl(directUrl, opts) {
   opts = opts || {};
-  console.log('[CoverDiag] loadCoverFromUrl called', 'directUrl:', (directUrl||'').slice(0,80), 'hasToken:', !!opts.trackToken, 'token:', opts.trackToken, 'switchToken:', trackSwitchToken);
   if (!directUrl || typeof directUrl !== 'string' || !/^https?:\/\//i.test(directUrl)) {
-    console.warn('[CoverDiag] INVALID URL - skipping cover', 'directUrl:', directUrl, 'typeof:', typeof directUrl);
     if (!coverApplyStillCurrent(opts)) return;
     currentCoverSource = null;
     coverProcessToken++;
@@ -12538,9 +12536,7 @@ function loadCoverFromUrl(directUrl, opts) {
   document.getElementById('album-bg').style.backgroundImage = "url(" + directUrl + ")";
   document.getElementById('album-bg').classList.add('visible');
   var proxiedUrl = coverProxySrc(directUrl);
-  console.log('[CoverDiag] proxyUrl:', proxiedUrl);
   if (!proxiedUrl) {
-    console.warn('[CoverDiag] NO PROXY URL - skipping cover');
     uniforms.uHasCover.value = 0; setCoverDepthState(0, 0, 1);
     resetFloatColorsToIdle();
     setControlCoverSrc('');
@@ -12548,7 +12544,6 @@ function loadCoverFromUrl(directUrl, opts) {
   }
   var img = new Image(); img.crossOrigin = 'anonymous'; img.decoding = 'async';
   img.onload = function() {
-    console.log('[CoverDiag] IMG ONLOAD fired', 'size:', img.naturalWidth+'x'+img.naturalHeight, 'stillCurrent:', coverApplyStillCurrent(opts));
     if (!coverApplyStillCurrent(opts)) return;
     var size = coverTextureSizeForResolution(fx.coverResolution);
     var cv = document.createElement('canvas'); cv.width = cv.height = size;
@@ -12557,17 +12552,13 @@ function loadCoverFromUrl(directUrl, opts) {
     try {
       cx.drawImage(img, (iw-s)/2, (ih-s)/2, s, s, 0, 0, size, size);
     } catch(e) {
-      console.error('[CoverDiag] drawImage FAILED', e);
       return;
     }
-    console.log('[CoverDiag] Calling applyCoverCanvas', 'canvas:', size+'x'+size);
     applyCoverCanvas(cv, proxiedUrl || directUrl, Object.assign({}, opts, { coverKey: directUrl || proxiedUrl || '', coverSourceKind: 'url', coverSource: directUrl }));
   };
   img.onerror = function() {
-    console.warn('[CoverDiag] IMG ONERROR (proxy failed)', 'proxiedUrl:', proxiedUrl, 'trying direct fallback');
     var img2 = new Image(); img2.crossOrigin = 'anonymous'; img2.decoding = 'async';
     img2.onload = function() {
-      console.log('[CoverDiag] FALLBACK IMG ONLOAD fired');
       if (!coverApplyStillCurrent(opts)) return;
       var size = coverTextureSizeForResolution(fx.coverResolution);
       var cv = document.createElement('canvas'); cv.width = cv.height = size;
@@ -12575,7 +12566,6 @@ function loadCoverFromUrl(directUrl, opts) {
       applyCoverCanvas(cv, directUrl, Object.assign({}, opts, { coverKey: directUrl || '', coverSourceKind: 'url', coverSource: directUrl }));
     };
     img2.onerror = function() {
-      console.warn('[CoverDiag] FALLBACK IMG ALSO FAILED');
       if (!coverApplyStillCurrent(opts)) return;
       currentCoverSource = null;
       uniforms.uHasCover.value = 0; setCoverDepthState(0, 0, 1);
@@ -12585,7 +12575,6 @@ function loadCoverFromUrl(directUrl, opts) {
     img2.src = directUrl;
   };
   img.src = proxiedUrl;
-  console.log('[CoverDiag] Image src set, waiting for load...');
 }
 
 function setAlbumBackground(src) {
@@ -15458,7 +15447,10 @@ function updateListenStatsTick(force) {
   var song = currentCoverSong();
   if (!song) return;
   var key = queueItemKey(song);
-  if (!listenSession || listenSession.key !== key) beginListenSession(song, activeRadioContext);
+  if (!listenSession || listenSession.key !== key) {
+    if (!force) beginListenSession(song, activeRadioContext);
+    else return;
+  }
   if (!listenSession) return;
   var now = Date.now();
   var audioTime = isFinite(audio.currentTime) ? audio.currentTime : 0;
