@@ -6233,7 +6233,7 @@ void main(){
       vec3 aurora = mix(vec3(0.52, 0.86, 1.0), vec3(0.70, 0.58, 1.0), bandN);
       aurora = mix(aurora, vec3(0.96, 0.98, 0.92), bassGlow * 0.05);
       vAlpha = (0.18 + ridge * 0.78 + pulseLine * highGlow * 0.035 + bassGlow * 0.025) * softMask * (0.96 + transition * 0.02);
-      vColor = mix(coverColor, aurora, 0.62 + ridge * 0.22) * (0.76 + ridge * 0.86 + pulseLine * highGlow * 0.05 + bassGlow * 0.04);
+      vColor = mix(coverColor, aurora, 0.30 + ridge * 0.20) * (0.76 + ridge * 0.86 + pulseLine * highGlow * 0.05 + bassGlow * 0.04);
       maxRippleAmp = max(maxRippleAmp, ridge * (0.12 + midGlow * 0.05) + pulseLine * highGlow * 0.045 + bassGlow * 0.030);
     } else {
       float q = (lane - 0.80) / 0.20;
@@ -9933,8 +9933,7 @@ function updateControlTrackInfo(song) {
 
 function applyCoverCanvas(cv, thumbSrc, opts) {
   opts = opts || {};
-  console.log('[CL] applyCoverCanvas cv=' + (cv ? cv.width+'x'+cv.height : 'null') + ' stillCurrent=' + coverApplyStillCurrent(opts));
-  if (!cv || !coverApplyStillCurrent(opts)) { console.warn('[CL] applyCoverCanvas SKIPPED'); return; }
+  if (!cv || !coverApplyStillCurrent(opts)) return;
   var token = ++coverProcessToken;
   if (opts.coverSource && opts.coverSourceKind) {
     currentCoverSource = { kind: opts.coverSourceKind, src: opts.coverSource };
@@ -12523,9 +12522,7 @@ function hideAIDepthChip() {
 
 function loadCoverFromUrl(directUrl, opts) {
   opts = opts || {};
-  console.log('[CL] loadCoverFromUrl url=' + String(directUrl||'').slice(0,90) + ' token=' + (opts.trackToken||'none') + ' curToken=' + trackSwitchToken + ' stillCurrent=' + coverApplyStillCurrent(opts));
   if (!directUrl || typeof directUrl !== 'string' || !/^https?:\/\//i.test(directUrl)) {
-    console.warn('[CL] REJECTED: invalid url');
     if (!coverApplyStillCurrent(opts)) return;
     currentCoverSource = null;
     coverProcessToken++;
@@ -16011,7 +16008,6 @@ function deactivateHomeWallpaperPreview(playback) {
   }
 }
 function switchPlaybackVisualToEmily() {
-  console.log('[PresetDiag] switchPlaybackVisualToEmily: homeVisualPresetActive=' + homeVisualPresetActive + ' fx.preset=' + fx.preset + ' playbackVisualPreset=' + playbackVisualPreset + ' defaults=' + fxDefaults.preset);
   if (homeVisualPresetActive) {
     deactivateHomeWallpaperPreview(true);
     return;
@@ -16028,6 +16024,8 @@ function switchPlaybackVisualToEmily() {
 function applyStartupStarfieldPreset() {
   if (playing || currentIdx >= 0) return;
   startupVisualPreviewActive = true;
+  homeVisualPresetActive = true;
+  homeVisualPrevPreset = fx.preset;
   if (typeof setPreset === 'function' && fx.preset !== 5) {
     setPreset(5, { silent: true, preserveCamera: false, skipTransition: true, noSave: true });
   } else if (typeof syncFxUniforms === 'function') {
@@ -18518,11 +18516,9 @@ async function playQueueAt(idx, opts) {
   markPlayPhase('cover-load');
   safePlaybackStep('cover-load', function(){
     var customCover = getCustomCoverForSong(song);
-    var coverUrl = song.cover ? coverUrlWithSize(song.cover, 400) : '';
-    console.log('[CL] cover-load step: song.cover=' + String(song.cover||'').slice(0,80) + ' coverUrl=' + String(coverUrl||'').slice(0,80) + ' customCover=' + (customCover ? 'yes' : 'no') + ' token=' + token);
     var coverOpts = { trackToken: token, deferHeavy: true, delay: firstVisualPlay ? 380 : 680, timeout: firstVisualPlay ? 1400 : 1900 };
     if (customCover) applyCoverDataUrl(customCover, coverOpts);
-    else loadCoverFromUrl(coverUrl, coverOpts);
+    else loadCoverFromUrl(song.cover ? coverUrlWithSize(song.cover, 400) : '', coverOpts);
   });
   safePlaybackStep('trial-banner-reset', function(){ document.getElementById('trial-banner').classList.remove('show'); });
   safePlaybackStep('show-loading', showLoading);
@@ -21338,7 +21334,6 @@ function tickPresetTransition() {
 }
 function setPreset(p, opts) {
   opts = opts || {};
-  console.log('[PresetDiag] setPreset p=' + p + ' prev=' + fx.preset + ' noSave=' + opts.noSave + ' skipTransition=' + opts.skipTransition);
   p = Math.max(0, Math.min(presetMeta.length - 1, Number(p) || 0));
   var prev = fx.preset;
   var changed = prev !== p;
@@ -27031,20 +27026,6 @@ function animate() {
   }
 
   renderer.render(scene, camera);
-
-  // [CoverDebug] 每帧检查封面纹理状态，前30秒每2秒输出一次
-  if (!window._coverDbgDone && uniforms.uTime.value < 30) {
-    if (!window._coverDbgLast || uniforms.uTime.value - window._coverDbgLast > 2) {
-      window._coverDbgLast = uniforms.uTime.value;
-      var ct = coverTex && coverTex.image;
-      console.log('[CoverDebug] t=' + uniforms.uTime.value.toFixed(1)
-        + ' uHasCover=' + uniforms.uHasCover.value
-        + ' coverTex=' + (ct ? ct.width + 'x' + ct.height : 'null')
-        + ' coverPicker=' + (coverPickerCanvas ? coverPickerCanvas.width + 'x' + coverPickerCanvas.height : 'null')
-        + ' preset=' + uniforms.uPreset.value
-        + ' uAlpha=' + (uniforms.uAlpha.value || 0).toFixed(2));
-    }
-  }
 }
 animate();
 
