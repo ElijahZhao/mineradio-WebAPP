@@ -9951,10 +9951,10 @@ function applyCoverCanvas(cv, thumbSrc, opts) {
     try {
       prevCv.getContext('2d').drawImage(coverTex.image, 0, 0, prevCv.width, prevCv.height);
       prevCoverTex.image = prevCv;
-      prevCoverTex.needsUpdate = true;
+      prevCoverTex.dispose(); prevCoverTex.needsUpdate = true;
     } catch (e) {}
   }
-  coverTex.image = cv; coverTex.needsUpdate = true;
+  coverTex.image = cv; coverTex.dispose(); coverTex.needsUpdate = true;
   coverPickerCanvas = cv;
   uniforms.uHasCover.value = 1;
   if (cachedDepth && cachedDepth.canvas) {
@@ -27024,6 +27024,28 @@ function animate() {
   }
 
   renderer.render(scene, camera);
+
+  // [CoverDebug] 每帧检查封面纹理状态，前10秒每秒输出一次
+  if (!window._coverDbgDone && uniforms.uTime.value < 10) {
+    if (!window._coverDbgLast || uniforms.uTime.value - window._coverDbgLast > 1) {
+      window._coverDbgLast = uniforms.uTime.value;
+      var ct = coverTex && coverTex.image;
+      console.log('[CoverDebug] frame t=' + uniforms.uTime.value.toFixed(1)
+        + ' uHasCover=' + uniforms.uHasCover.value
+        + ' uColorMixT=' + uniforms.uColorMixT.value.toFixed(3)
+        + ' uLoading=' + (uniforms.uLoading.value||0).toFixed(3)
+        + ' coverTex=' + (ct ? ct.width + 'x' + ct.height : 'null')
+        + ' needsUpdate=' + (coverTex ? coverTex.needsUpdate : '?')
+        + ' preset=' + uniforms.uPreset.value);
+      if (uniforms.uHasCover.value > 0.5 && ct && ct.width > 10) {
+        // 尝试读取一个像素来验证纹理数据
+        try {
+          var px = ct.getContext('2d').getImageData(Math.floor(ct.width/2), Math.floor(ct.height/2), 1, 1).data;
+          console.log('[CoverDebug] center pixel rgba=' + px[0] + ',' + px[1] + ',' + px[2] + ',' + px[3]);
+        } catch(e) { console.log('[CoverDebug] pixel read failed:', e); }
+      }
+    }
+  }
 }
 animate();
 
