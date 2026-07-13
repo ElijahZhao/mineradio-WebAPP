@@ -9954,7 +9954,15 @@ function applyCoverCanvas(cv, thumbSrc, opts) {
       prevCoverTex.needsUpdate = true;
     } catch (e) {}
   }
-  coverTex.image = cv; coverTex.needsUpdate = true;
+  // 创建新的 Texture 强制 GPU 重新上传纹理数据
+  var newCoverTex = new THREE.Texture(cv);
+  newCoverTex.minFilter = THREE.LinearFilter;
+  newCoverTex.magFilter = THREE.LinearFilter;
+  newCoverTex.wrapS = THREE.ClampToEdgeWrapping;
+  newCoverTex.wrapT = THREE.ClampToEdgeWrapping;
+  newCoverTex.needsUpdate = true;
+  uniforms.uCoverTex.value = newCoverTex;
+  coverTex = newCoverTex;
   coverPickerCanvas = cv;
   uniforms.uHasCover.value = 1;
   if (cachedDepth && cachedDepth.canvas) {
