@@ -347,22 +347,36 @@ function sendJSON(res, data, status) {
   res.end(JSON.stringify(data));
 }
 
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+function safeErrorMessage(err) {
+  if (!IS_PRODUCTION) return err && err.message || String(err);
+  const msg = err && err.message || '';
+  if (/^(invalid|not found|not exist|no such|forbidden|unauthorized|rate limit|too many|bad request|parameter|missing|empty)/i.test(msg)) {
+    return msg;
+  }
+  return 'Internal server error';
+}
+
 function sendHealth(res) {
   res.writeHead(200, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
   });
-  res.end(JSON.stringify({
-    ok: true,
-    uptime: process.uptime(),
-    sessions: sessions.size,
-    wsClients: typeof wsClients !== 'undefined' ? wsClients.size : 0,
-    memory: process.memoryUsage(),
-    activeRequests,
-    totalRequests,
-    errorCount,
-    version: APP_VERSION,
-  }));
+  const base = { ok: true, uptime: process.uptime() };
+  if (IS_PRODUCTION) {
+    res.end(JSON.stringify(base));
+  } else {
+    res.end(JSON.stringify({
+      ...base,
+      sessions: sessions.size,
+      wsClients: typeof wsClients !== 'undefined' ? wsClients.size : 0,
+      memory: process.memoryUsage(),
+      activeRequests,
+      totalRequests,
+      errorCount,
+      version: APP_VERSION,
+    }));
+  }
 }
 function readPackageInfo() {
   try {
@@ -1055,7 +1069,7 @@ function fallbackWeatherForRadio(params, err) {
     isDay: null,
     time: '',
     updatedAt: Date.now(),
-    error: err && err.message || '',
+    error: safeErrorMessage(err),
     mood: {
       key: 'fallback',
       title: '临时电台',
@@ -2280,7 +2294,9 @@ function applySecurityHeaders(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  if (IS_PRODUCTION) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   // CSP Report-Only：先收集违规报告，不阻断，后续逐步收紧
   res.setHeader('Content-Security-Policy-Report-Only', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' https: blob:; connect-src 'self' https:; report-uri /api/log-csp-violation");
   const origin = corsOriginFor(req);
@@ -2307,8 +2323,14 @@ const server = http.createServer(async (req, res) => {
     if (pn === '/') filePath = '/landing.html';
     else if (pn === '/app') filePath = '/index.html';
     else filePath = pn;
-    filePath = path.join(__dirname, 'public', filePath);
-    serveStatic(res, filePath);
+    const publicDir = path.join(__dirname, 'public');
+    const resolvedPath = path.normalize(path.join(publicDir, filePath));
+    if (!resolvedPath.startsWith(publicDir)) {
+      res.writeHead(403);
+      res.end('Forbidden');
+      return;
+    }
+    serveStatic(res, resolvedPath);
     return;
   }
 
@@ -2413,7 +2435,7 @@ const server = http.createServer(async (req, res) => {
           enabled: false,
           mode: 'memory-only',
           key,
-          reason: err.code || err.message || 'BEAT_CACHE_READ_FAILED',
+          reason: err.code || safeErrorMessage(err) || 'BEAT_CACHE_READ_FAILED',
           dir: info.dir,
         });
       }
@@ -2430,7 +2452,7 @@ const server = http.createServer(async (req, res) => {
           ok: false,
           enabled: false,
           mode: 'memory-only',
-          reason: err.code || err.message || 'BEAT_CACHE_WRITE_FAILED',
+          reason: err.code || safeErrorMessage(err) || 'BEAT_CACHE_WRITE_FAILED',
           dir: info.dir,
         });
       }
@@ -2446,7 +2468,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, await handleDiscoverHome());
     } catch (err) {
       console.error('[DiscoverHome]', err);
-      sendJSON(res, { error: err.message, loggedIn: false, dailySongs: [], playlists: [], podcasts: [] }, 500);
+      sendJSON(res, { error: safeErrorMessage(err), loggedIn: false, dailySongs: [], playlists: [], podcasts: [] }, 500);
     }
     return;
   }
@@ -2464,7 +2486,7 @@ const server = http.createServer(async (req, res) => {
       console.error('[WeatherRadio]', err);
       sendJSON(res, {
         ok: false,
-        error: err.message,
+        error: safeErrorMessage(err),
         weather: null,
         radio: { title: '天气电台', subtitle: '天气暂时没有回来，可以先听今日推荐。', seedQueries: [], songs: [] },
       }, 500);
@@ -2477,7 +2499,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { ok: true, location: await fetchIpWeatherLocation() });
     } catch (err) {
       console.error('[WeatherIpLocation]', err);
-      sendJSON(res, { ok: false, error: err.message, location: null }, 500);
+      sendJSON(res, { ok: false, error: safeErrorMessage(err), location: null }, 500);
     }
     return;
   }
@@ -2489,7 +2511,7 @@ const server = http.createServer(async (req, res) => {
       const limit = Math.max(1, Math.min(50, parseInt(url.searchParams.get('limit') || '20', 10) || 20));
       const songs = await handleSearch(kw, limit);
       sendJSON(res, { songs });
-    } catch (err) { console.error('[Search]', err); sendJSON(res, { error: err.message, songs: [] }, 500); }
+    } catch (err) { console.error('[Search]', err); sendJSON(res, { error: safeErrorMessage(err), songs: [] }, 500); }
     return;
   }
 
@@ -2501,7 +2523,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { provider: 'qq', songs });
     } catch (err) {
       console.error('[QQSearch]', err);
-      sendJSON(res, { provider: 'qq', error: err.message, songs: [] }, 500);
+      sendJSON(res, { provider: 'qq', error: safeErrorMessage(err), songs: [] }, 500);
     }
     return;
   }
@@ -2515,7 +2537,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, info);
     } catch (err) {
       console.error('[QQSongUrl]', err);
-      sendJSON(res, { provider: 'qq', url: '', playable: false, error: err.message }, 500);
+      sendJSON(res, { provider: 'qq', url: '', playable: false, error: safeErrorMessage(err) }, 500);
     }
     return;
   }
@@ -2529,7 +2551,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, data);
     } catch (err) {
       console.error('[QQLyric]', err);
-      sendJSON(res, { provider: 'qq', error: err.message, lyric: '' }, 500);
+      sendJSON(res, { provider: 'qq', error: safeErrorMessage(err), lyric: '' }, 500);
     }
     return;
   }
@@ -2541,7 +2563,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, info);
     } catch (err) {
       console.error('[QQLoginStatus]', err);
-      sendJSON(res, { provider: 'qq', loggedIn: false, error: err.message }, 500);
+      sendJSON(res, { provider: 'qq', loggedIn: false, error: safeErrorMessage(err) }, 500);
     }
     return;
   }
@@ -2561,7 +2583,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { ...info, saved: true });
     } catch (err) {
       console.error('[QQLoginCookie]', err);
-      sendJSON(res, { provider: 'qq', loggedIn: false, error: err.message }, 500);
+      sendJSON(res, { provider: 'qq', loggedIn: false, error: safeErrorMessage(err) }, 500);
     }
     return;
   }
@@ -2578,7 +2600,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, data);
     } catch (err) {
       console.error('[QQUserPlaylists]', err);
-      sendJSON(res, { provider: 'qq', loggedIn: false, error: err.message, playlists: [] }, 500);
+      sendJSON(res, { provider: 'qq', loggedIn: false, error: safeErrorMessage(err), playlists: [] }, 500);
     }
     return;
   }
@@ -2590,7 +2612,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, data);
     } catch (err) {
       console.error('[QQPlaylistTracks]', err);
-      sendJSON(res, { provider: 'qq', error: err.message, tracks: [] }, 500);
+      sendJSON(res, { provider: 'qq', error: safeErrorMessage(err), tracks: [] }, 500);
     }
     return;
   }
@@ -2607,7 +2629,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, data);
     } catch (err) {
       console.error('[QQArtistDetail]', err);
-      sendJSON(res, { provider: 'qq', error: err.message, artist: null, songs: [] }, 500);
+      sendJSON(res, { provider: 'qq', error: safeErrorMessage(err), artist: null, songs: [] }, 500);
     }
     return;
   }
@@ -2622,7 +2644,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, data);
     } catch (err) {
       console.error('[QQSongComments]', err);
-      sendJSON(res, { provider: 'qq', error: err.message, comments: [] }, 500);
+      sendJSON(res, { provider: 'qq', error: safeErrorMessage(err), comments: [] }, 500);
     }
     return;
   }
@@ -2639,7 +2661,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { podcasts, total: result.djRadiosCount || result.djradiosCount || podcasts.length });
     } catch (err) {
       console.error('[PodcastSearch]', err);
-      sendJSON(res, { error: err.message, podcasts: [] }, 500);
+      sendJSON(res, { error: safeErrorMessage(err), podcasts: [] }, 500);
     }
     return;
   }
@@ -2655,7 +2677,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { podcasts, more: !!body.hasMore });
     } catch (err) {
       console.error('[PodcastHot]', err);
-      sendJSON(res, { error: err.message, podcasts: [] }, 500);
+      sendJSON(res, { error: safeErrorMessage(err), podcasts: [] }, 500);
     }
     return;
   }
@@ -2670,7 +2692,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { podcast: radio });
     } catch (err) {
       console.error('[PodcastDetail]', err);
-      sendJSON(res, { error: err.message }, 500);
+      sendJSON(res, { error: safeErrorMessage(err) }, 500);
     }
     return;
   }
@@ -2691,7 +2713,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { radio, programs, more: !!body.more, total: body.count || programs.length });
     } catch (err) {
       console.error('[PodcastPrograms]', err);
-      sendJSON(res, { error: err.message, programs: [] }, 500);
+      sendJSON(res, { error: safeErrorMessage(err), programs: [] }, 500);
     }
     return;
   }
@@ -2717,7 +2739,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { loggedIn: true, collections });
     } catch (err) {
       console.error('[MyPodcast]', err);
-      sendJSON(res, { error: err.message, collections: [] }, 500);
+      sendJSON(res, { error: safeErrorMessage(err), collections: [] }, 500);
     }
     return;
   }
@@ -2733,7 +2755,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { loggedIn: true, key, ...podcastCollectionMeta(key, data.items || []), itemType: data.itemType, items: data.items || [] });
     } catch (err) {
       console.error('[MyPodcastItems]', err);
-      sendJSON(res, { error: err.message, items: [] }, 500);
+      sendJSON(res, { error: safeErrorMessage(err), items: [] }, 500);
     }
     return;
   }
@@ -2753,7 +2775,7 @@ const server = http.createServer(async (req, res) => {
         isSvip: !!loginInfo.isSvip,
         vipLabel: loginInfo.vipLabel || '无VIP',
       });
-    } catch (err) { console.error('[SongUrl]', err); sendJSON(res, { error: err.message }, 500); }
+    } catch (err) { console.error('[SongUrl]', err); sendJSON(res, { error: safeErrorMessage(err) }, 500); }
     return;
   }
 
@@ -2785,7 +2807,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { ...info, saved: true, hasCookie: !!getUserCookie() });
     } catch (err) {
       console.error('[LoginCookie]', err);
-      sendJSON(res, { loggedIn: false, error: err.message }, 500);
+      sendJSON(res, { loggedIn: false, error: safeErrorMessage(err) }, 500);
     }
     return;
   }
@@ -2814,7 +2836,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { ok: true, map });
     } catch (err) {
       console.error('[PodcastDjBeatmap]', err);
-      sendJSON(res, { ok: false, error: err.message || String(err) }, 500);
+      sendJSON(res, { ok: false, error: safeErrorMessage(err) }, 500);
     }
     return;
   }
@@ -2824,7 +2846,7 @@ const server = http.createServer(async (req, res) => {
       const r = await login_qr_key({ timestamp: Date.now() });
       const key = r.body && r.body.data && r.body.data.unikey;
       sendJSON(res, { key });
-    } catch (err) { sendJSON(res, { error: err.message }, 500); }
+    } catch (err) { sendJSON(res, { error: safeErrorMessage(err) }, 500); }
     return;
   }
 
@@ -2835,7 +2857,7 @@ const server = http.createServer(async (req, res) => {
       const r = await login_qr_create({ key, qrimg: true, timestamp: Date.now() });
       const d = r.body && r.body.data;
       sendJSON(res, { img: d && d.qrimg, url: d && d.qrurl });
-    } catch (err) { sendJSON(res, { error: err.message }, 500); }
+    } catch (err) { sendJSON(res, { error: safeErrorMessage(err) }, 500); }
     return;
   }
 
@@ -2888,7 +2910,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       sendJSON(res, { code, message: msg, nickname: body.nickname, avatar: body.avatarUrl });
-    } catch (err) { sendJSON(res, { error: err.message }, 500); }
+    } catch (err) { sendJSON(res, { error: safeErrorMessage(err) }, 500); }
     return;
   }
 
@@ -2927,7 +2949,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { loggedIn: true, userId: info.userId, playlists: list });
     } catch (err) {
       console.error('[UserPlaylists]', err);
-      sendJSON(res, { error: err.message, loggedIn: false, playlists: [] }, 500);
+      sendJSON(res, { error: safeErrorMessage(err), loggedIn: false, playlists: [] }, 500);
     }
     return;
   }
@@ -2967,7 +2989,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { loggedIn: true, ids, liked });
     } catch (err) {
       console.error('[LikeCheck]', err);
-      sendJSON(res, { error: err.message }, 500);
+      sendJSON(res, { error: safeErrorMessage(err) }, 500);
     }
     return;
   }
@@ -2986,7 +3008,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { loggedIn: true, id, liked: nextLike, code, body: r.body || r });
     } catch (err) {
       console.error('[Like]', err);
-      sendJSON(res, { error: err.message }, 500);
+      sendJSON(res, { error: safeErrorMessage(err) }, 500);
     }
     return;
   }
@@ -3005,7 +3027,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { loggedIn: true, playlist: created, body: r.body || r });
     } catch (err) {
       console.error('[PlaylistCreate]', err);
-      sendJSON(res, { error: err.message }, 500);
+      sendJSON(res, { error: safeErrorMessage(err) }, 500);
     }
     return;
   }
@@ -3056,7 +3078,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { loggedIn: true, pid, id, success: true, code: finalCode, body: finalBody, attempts });
     } catch (err) {
       console.error('[PlaylistAddSong]', err);
-      sendJSON(res, { error: err.message }, 500);
+      sendJSON(res, { error: safeErrorMessage(err) }, 500);
     }
     return;
   }
@@ -3090,7 +3112,7 @@ const server = http.createServer(async (req, res) => {
       });
     } catch (err) {
       console.error('[Lyric]', err);
-      sendJSON(res, { error: err.message, lyric: '' }, 500);
+      sendJSON(res, { error: safeErrorMessage(err), lyric: '' }, 500);
     }
     return;
   }
@@ -3115,7 +3137,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { id, total: body.total || 0, comments, hot: !!(body.hotComments && offset === 0), body });
     } catch (err) {
       console.error('[SongComments]', err);
-      sendJSON(res, { error: err.message, comments: [] }, 500);
+      sendJSON(res, { error: safeErrorMessage(err), comments: [] }, 500);
     }
     return;
   }
@@ -3163,7 +3185,7 @@ const server = http.createServer(async (req, res) => {
       });
     } catch (err) {
       console.error('[ArtistDetail]', err);
-      sendJSON(res, { error: err.message, songs: [] }, 500);
+      sendJSON(res, { error: safeErrorMessage(err), songs: [] }, 500);
     }
     return;
   }
@@ -3200,7 +3222,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, { playlist: playlistMeta, tracks });
     } catch (err) {
       console.error('[PlaylistTracks]', err);
-      sendJSON(res, { error: err.message, tracks: [] }, 500);
+      sendJSON(res, { error: safeErrorMessage(err), tracks: [] }, 500);
     }
     return;
   }
@@ -3268,7 +3290,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, result);
     } catch (err) {
       console.error('[QQQRCreate]', err);
-      sendJSON(res, { error: err.message || 'QR_CREATE_FAILED' }, 500);
+      sendJSON(res, { error: safeErrorMessage(err) || 'QR_CREATE_FAILED' }, 500);
     }
     return;
   }
@@ -3280,7 +3302,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, result);
     } catch (err) {
       console.error('[QQQRCheck]', err);
-      sendJSON(res, { status: 'error', error: err.message || 'QR_CHECK_FAILED' }, 500);
+      sendJSON(res, { status: 'error', error: safeErrorMessage(err) || 'QR_CHECK_FAILED' }, 500);
     }
     return;
   }
