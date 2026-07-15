@@ -3282,7 +3282,7 @@ var fxDefaults = {
   desktopLyricsFps: 60,
   wallpaperMode: false,
   wallpaperOpacity: 1,
-  floatLayer: false, cinema: true, edge: false, aiDepth: false, bloom: false, lyricGlow: true,
+  floatLayer: false, atmosParticles: true, cinema: true, edge: false, aiDepth: false, bloom: false, lyricGlow: true,
   lyricGlowBeat: true,
   lyricGlowParticles: false,
   lyricCameraLock: false,
@@ -3354,6 +3354,7 @@ var PACKAGED_DEFAULT_FX_SNAPSHOT = Object.freeze({
   controlGlassChromaticOffset: 90,
   backgroundColorCustom: false,
   floatLayer: false,
+  atmosParticles: true,
   cinema: true,
   edge: false,
   aiDepth: false,
@@ -5910,6 +5911,7 @@ var uniforms = {
   uAlpha:      { value: 0 },          // 整体粒子透明度 (启动 fade-in)
   uParticleDim:{ value: 1 },          // 覆盖层打开时只压低粒子背景, 不影响 3D 卡片
   uFloatAlpha: { value: 0 },          // 空场/浮空粒子透明度
+  uAtmosAlpha: { value: 0 },          // 氛围环绕粒子透明度
   uLoading:    { value: 0 },          // 加载动画混合度 0..1 (1 = 完全聚成圆环)
 };
 installRenderPowerHooks();
@@ -7258,6 +7260,369 @@ function resetFloatColorsToIdle() {
     floatColorArr[i*3+2] = white;
   }
   floatGroup.geometry.attributes.aColor.needsUpdate = true;
+}
+
+// ============================================================
+//  氛围环绕粒子层 (三层独立 Points)
+//   - 外环星尘: 远处球壳, 极慢旋转, 星点感
+//   - 中景轨道: 椭球面, 错落环绕, 受中高频驱动
+//   - 近景漂浮: 封面周围, 大粒子辉光, 受低频驱动
+//   全部 AdditiveBlending, 不影响核心粒子转墙
+// ============================================================
+var ATMOS_OUTER_COUNT = 2000;
+var ATMOS_MID_COUNT   = 1500;
+var ATMOS_NEAR_COUNT  = 800;
+var atmosOuterGroup = null, atmosMidGroup = null, atmosNearGroup = null;
+var atmosOuterColorArr = null, atmosMidColorArr = null, atmosNearColorArr = null;
+
+function createAtmosLayers() {
+  if (atmosOuterGroup && atmosMidGroup && atmosNearGroup) return;
+  destroyAtmosLayers();
+
+  // ---------- 外环星尘 ----------
+  var oGeo = new THREE.BufferGeometry();
+  var oPos = new Float32Array(ATMOS_OUTER_COUNT * 3);
+  var oCol = new Float32Array(ATMOS_OUTER_COUNT * 3);
+  var oRnd = new Float32Array(ATMOS_OUTER_COUNT);
+  var oPhs = new Float32Array(ATMOS_OUTER_COUNT * 2);
+  for (var i = 0; i < ATMOS_OUTER_COUNT; i++) {
+    var theta = Math.random() * Math.PI * 2;
+    var phi = Math.acos(2 * Math.random() - 1);
+    var r = 9 + Math.pow(Math.random(), 1.5) * 6;
+    oPos[i*3]   = r * Math.sin(phi) * Math.cos(theta);
+    oPos[i*3+1] = r * Math.sin(phi) * Math.sin(theta) * 0.82;
+    oPos[i*3+2] = r * Math.cos(phi);
+    var white = 0.80 + Math.random() * 0.20;
+    oCol[i*3]   = white;
+    oCol[i*3+1] = white;
+    oCol[i*3+2] = white * (0.92 + Math.random() * 0.08);
+    oRnd[i] = Math.random();
+    oPhs[i*2]   = Math.random() * Math.PI * 2;
+    oPhs[i*2+1] = Math.random() * Math.PI * 2;
+  }
+  oGeo.setAttribute('position', new THREE.BufferAttribute(oPos, 3));
+  oGeo.setAttribute('aColor',   new THREE.BufferAttribute(oCol, 3));
+  oGeo.setAttribute('aRand',    new THREE.BufferAttribute(oRnd, 1));
+  oGeo.setAttribute('aPhase',   new THREE.BufferAttribute(oPhs, 2));
+  var oVs = `
+    precision highp float;
+    uniform float uTime, uTreble, uBeat, uPixel, uAtmosAlpha;
+    attribute vec3 aColor;
+    attribute vec2 aPhase;
+    attribute float aRand;
+    varying vec3 vC;
+    varying float vA;
+    void main(){
+      vec3 pos = position;
+      float slowRot = uTime * 0.012 + aRand * 0.008;
+      float cs = cos(slowRot), sn = sin(slowRot);
+      pos.xy = mat2(cs, -sn, sn, cs) * pos.xy;
+      float tiltRot = uTime * 0.006 + aPhase.x * 0.01;
+      float ct = cos(tiltRot), st = sin(tiltRot);
+      pos.yz = mat2(ct, -st, st, ct) * pos.yz;
+      float twinkle = 0.55 + 0.45 * sin(uTime * (0.35 + aRand * 0.55) + aPhase.x * 3.0);
+      float trebleGlow = 0.8 + uTreble * 0.9 * (0.5 + aRand * 0.5);
+      float beatPop = 1.0 + uBeat * 0.18 * sin(aRand * 25.0);
+      vC = aColor * trebleGlow * beatPop;
+      vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
+      float dist = max(1.0, -mvPos.z);
+      vA = clamp(0.12 + (14.0 - dist) * 0.012, 0.03, 0.48) * twinkle;
+      float sz = clamp(34.0 / dist, 0.9, 2.8);
+      gl_PointSize = sz * uPixel;
+      gl_Position = projectionMatrix * mvPos;
+    }
+  `;
+  var oFs = `
+    precision highp float;
+    uniform sampler2D uDotTex;
+    uniform float uAtmosAlpha;
+    varying vec3 vC;
+    varying float vA;
+    void main(){
+      vec4 tex = texture2D(uDotTex, gl_PointCoord);
+      if (tex.a < 0.02) discard;
+      gl_FragColor = vec4(vC, tex.a * vA * uAtmosAlpha * 0.55);
+    }
+  `;
+  var oMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: uniforms.uTime,
+      uTreble: uniforms.uTreble,
+      uBeat: uniforms.uBeat,
+      uPixel: uniforms.uPixel,
+      uDotTex: uniforms.uDotTex,
+      uAtmosAlpha: uniforms.uAtmosAlpha,
+    },
+    vertexShader: oVs, fragmentShader: oFs,
+    transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending,
+  });
+  atmosOuterGroup = new THREE.Points(oGeo, oMat);
+  atmosOuterGroup.frustumCulled = false;
+  atmosOuterGroup.renderOrder = 2;
+  atmosOuterColorArr = oCol;
+  scene.add(atmosOuterGroup);
+
+  // ---------- 中景轨道粒子 ----------
+  var mGeo = new THREE.BufferGeometry();
+  var mPos = new Float32Array(ATMOS_MID_COUNT * 3);
+  var mCol = new Float32Array(ATMOS_MID_COUNT * 3);
+  var mRnd = new Float32Array(ATMOS_MID_COUNT);
+  var mPhs = new Float32Array(ATMOS_MID_COUNT * 3);
+  var mLane = new Float32Array(ATMOS_MID_COUNT);
+  for (var j = 0; j < ATMOS_MID_COUNT; j++) {
+    var lane = Math.floor(Math.random() * 5);
+    var laneAngle = lane * (Math.PI * 2 / 5) + Math.random() * 0.4 - 0.2;
+    var rr = 4.5 + Math.random() * 2.8;
+    var tilt = (Math.random() - 0.5) * 0.6;
+    mPos[j*3]   = Math.cos(laneAngle) * rr;
+    mPos[j*3+1] = (Math.random() - 0.5) * 2.2 + tilt * rr * 0.3;
+    mPos[j*3+2] = Math.sin(laneAngle) * rr;
+    var tint = Math.random();
+    if (tint < 0.5) {
+      mCol[j*3] = 0.6 + Math.random() * 0.3;
+      mCol[j*3+1] = 0.85 + Math.random() * 0.15;
+      mCol[j*3+2] = 1.0;
+    } else if (tint < 0.8) {
+      mCol[j*3] = 1.0;
+      mCol[j*3+1] = 0.82 + Math.random() * 0.12;
+      mCol[j*3+2] = 0.55 + Math.random() * 0.15;
+    } else {
+      mCol[j*3] = 0.95;
+      mCol[j*3+1] = 0.95;
+      mCol[j*3+2] = 1.0;
+    }
+    mRnd[j] = Math.random();
+    mLane[j] = lane;
+    mPhs[j*3]   = Math.random() * Math.PI * 2;
+    mPhs[j*3+1] = Math.random() * Math.PI * 2;
+    mPhs[j*3+2] = Math.random() * Math.PI * 2;
+  }
+  mGeo.setAttribute('position', new THREE.BufferAttribute(mPos, 3));
+  mGeo.setAttribute('aColor',   new THREE.BufferAttribute(mCol, 3));
+  mGeo.setAttribute('aRand',    new THREE.BufferAttribute(mRnd, 1));
+  mGeo.setAttribute('aLane',    new THREE.BufferAttribute(mLane, 1));
+  mGeo.setAttribute('aPhase',   new THREE.BufferAttribute(mPhs, 3));
+  var mV = `
+    precision highp float;
+    uniform float uTime, uMid, uBeat, uPixel, uAtmosAlpha;
+    attribute vec3 aColor;
+    attribute vec3 aPhase;
+    attribute float aRand, aLane;
+    varying vec3 vC;
+    varying float vA;
+    void main(){
+      vec3 pos = position;
+      float orbitSpeed = 0.04 + aLane * 0.012 + aRand * 0.02;
+      float dir = mod(aLane, 2.0) < 0.5 ? 1.0 : -1.0;
+      float ang = uTime * orbitSpeed * dir + aPhase.x;
+      float cs = cos(ang), sn = sin(ang);
+      pos.xz = mat2(cs, -sn, sn, cs) * pos.xz;
+      float wave = sin(uTime * (0.22 + aRand * 0.18) + aPhase.y) * 0.35;
+      pos.y += wave;
+      float breath = 1.0 + sin(uTime * 0.18 + aPhase.z) * 0.04;
+      pos.xz *= breath;
+      float midPulse = 1.0 + uMid * 0.35 * (0.6 + aRand * 0.4);
+      float beatFlash = 1.0 + uBeat * 0.22 * sin(aRand * 30.0);
+      vC = aColor * midPulse * beatFlash;
+      vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
+      float dist = max(0.6, -mvPos.z);
+      float twink = 0.68 + 0.32 * sin(uTime * (0.5 + aRand * 0.7) + aPhase.x * 2.0);
+      vA = clamp(0.20 + (7.0 - dist) * 0.05, 0.06, 0.62) * twink;
+      float sz = clamp(42.0 / dist, 1.2, 4.0);
+      gl_PointSize = sz * uPixel;
+      gl_Position = projectionMatrix * mvPos;
+    }
+  `;
+  var mF = `
+    precision highp float;
+    uniform sampler2D uDotTex;
+    uniform float uAtmosAlpha;
+    varying vec3 vC;
+    varying float vA;
+    void main(){
+      vec4 tex = texture2D(uDotTex, gl_PointCoord);
+      if (tex.a < 0.02) discard;
+      gl_FragColor = vec4(vC, tex.a * vA * uAtmosAlpha * 0.70);
+    }
+  `;
+  var mMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: uniforms.uTime,
+      uMid: uniforms.uMid,
+      uBeat: uniforms.uBeat,
+      uPixel: uniforms.uPixel,
+      uDotTex: uniforms.uDotTex,
+      uAtmosAlpha: uniforms.uAtmosAlpha,
+    },
+    vertexShader: mV, fragmentShader: mF,
+    transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending,
+  });
+  atmosMidGroup = new THREE.Points(mGeo, mMat);
+  atmosMidGroup.frustumCulled = false;
+  atmosMidGroup.renderOrder = 3;
+  atmosMidColorArr = mCol;
+  scene.add(atmosMidGroup);
+
+  // ---------- 近景漂浮粒子 ----------
+  var nGeo = new THREE.BufferGeometry();
+  var nPos = new Float32Array(ATMOS_NEAR_COUNT * 3);
+  var nCol = new Float32Array(ATMOS_NEAR_COUNT * 3);
+  var nRnd = new Float32Array(ATMOS_NEAR_COUNT);
+  var nPhs = new Float32Array(ATMOS_NEAR_COUNT * 3);
+  var nBase = new Float32Array(ATMOS_NEAR_COUNT * 3);
+  for (var k = 0; k < ATMOS_NEAR_COUNT; k++) {
+    var a = Math.random() * Math.PI * 2;
+    var rad = 2.0 + Math.pow(Math.random(), 0.6) * 2.0;
+    var ny = (Math.random() - 0.5) * 2.6;
+    var nz = (Math.random() - 0.5) * 1.8;
+    var bx = Math.cos(a) * rad;
+    var by = ny;
+    var bz = Math.sin(a) * rad + nz * 0.4;
+    nBase[k*3]   = bx; nBase[k*3+1] = by; nBase[k*3+2] = bz;
+    nPos[k*3]   = bx; nPos[k*3+1] = by; nPos[k*3+2] = bz;
+    var w = 0.9 + Math.random() * 0.1;
+    nCol[k*3]   = w;
+    nCol[k*3+1] = w;
+    nCol[k*3+2] = w * (0.95 + Math.random() * 0.05);
+    nRnd[k] = Math.random();
+    nPhs[k*3]   = Math.random() * Math.PI * 2;
+    nPhs[k*3+1] = Math.random() * Math.PI * 2;
+    nPhs[k*3+2] = Math.random() * Math.PI * 2;
+  }
+  nGeo.setAttribute('position', new THREE.BufferAttribute(nPos, 3));
+  nGeo.setAttribute('aBasePos', new THREE.BufferAttribute(nBase, 3));
+  nGeo.setAttribute('aColor',   new THREE.BufferAttribute(nCol, 3));
+  nGeo.setAttribute('aRand',    new THREE.BufferAttribute(nRnd, 1));
+  nGeo.setAttribute('aPhase',   new THREE.BufferAttribute(nPhs, 3));
+  var nV = `
+    precision highp float;
+    uniform float uTime, uBass, uBeat, uEnergy, uPixel, uAtmosAlpha;
+    attribute vec3 aBasePos, aColor, aPhase;
+    attribute float aRand;
+    varying vec3 vC;
+    varying float vA;
+    void main(){
+      vec3 pos = aBasePos;
+      float slowOrbit = uTime * 0.025 + aRand * 0.015;
+      float cs = cos(slowOrbit), sn = sin(slowOrbit);
+      pos.xz = mat2(cs, -sn, sn, cs) * pos.xz;
+      pos.x += sin(uTime * (0.28 + aRand * 0.22) + aPhase.x) * 0.42;
+      pos.y += cos(uTime * (0.24 + aRand * 0.20) + aPhase.y) * 0.38;
+      pos.z += sin(uTime * (0.20 + aRand * 0.18) + aPhase.z) * 0.55;
+      float bassBreath = 1.0 + uBass * 0.32 * (0.7 + aRand * 0.3);
+      pos.xyz *= bassBreath;
+      float beatJump = uBeat * 0.25 * sin(aRand * 40.0);
+      pos.y += beatJump;
+      float energyGlow = 0.72 + uEnergy * 0.8 * (0.5 + aRand * 0.5);
+      float beatFlash = 1.0 + uBeat * 0.35 * step(0.7, fract(aRand * 13.0));
+      vC = aColor * energyGlow * beatFlash;
+      vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
+      float dist = max(0.35, -mvPos.z);
+      float twink = 0.60 + 0.40 * sin(uTime * (0.7 + aRand * 0.9) + aPhase.x * 1.5);
+      vA = clamp(0.28 + (4.5 - dist) * 0.09, 0.08, 0.75) * twink;
+      float sz = clamp(58.0 / dist, 2.0, 7.0);
+      gl_PointSize = sz * uPixel;
+      gl_Position = projectionMatrix * mvPos;
+    }
+  `;
+  var nF = `
+    precision highp float;
+    uniform sampler2D uDotTex;
+    uniform float uAtmosAlpha;
+    varying vec3 vC;
+    varying float vA;
+    void main(){
+      vec4 tex = texture2D(uDotTex, gl_PointCoord);
+      if (tex.a < 0.02) discard;
+      float core = smoothstep(0.5, 0.0, length(gl_PointCoord - vec2(0.5)) * 2.0);
+      vec3 col = vC * (0.75 + core * 0.5);
+      gl_FragColor = vec4(col, tex.a * vA * uAtmosAlpha * 0.85);
+    }
+  `;
+  var nMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: uniforms.uTime,
+      uBass: uniforms.uBass,
+      uBeat: uniforms.uBeat,
+      uEnergy: uniforms.uEnergy,
+      uPixel: uniforms.uPixel,
+      uDotTex: uniforms.uDotTex,
+      uAtmosAlpha: uniforms.uAtmosAlpha,
+    },
+    vertexShader: nV, fragmentShader: nF,
+    transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending,
+  });
+  atmosNearGroup = new THREE.Points(nGeo, nMat);
+  atmosNearGroup.frustumCulled = false;
+  atmosNearGroup.renderOrder = 4;
+  atmosNearColorArr = nCol;
+  scene.add(atmosNearGroup);
+}
+
+function destroyAtmosLayers() {
+  var list = [atmosOuterGroup, atmosMidGroup, atmosNearGroup];
+  for (var i = 0; i < list.length; i++) {
+    var g = list[i];
+    if (!g) continue;
+    scene.remove(g);
+    g.geometry.dispose();
+    g.material.dispose();
+  }
+  atmosOuterGroup = null; atmosMidGroup = null; atmosNearGroup = null;
+  atmosOuterColorArr = null; atmosMidColorArr = null; atmosNearColorArr = null;
+}
+
+function refreshAtmosColorsFromCover(coverCanvas) {
+  if (!atmosOuterGroup || !atmosMidGroup || !atmosNearGroup || !coverCanvas) return;
+  var ctx = coverCanvas.getContext('2d');
+  var img = ctx.getImageData(0, 0, coverCanvas.width, coverCanvas.height).data;
+  var w = coverCanvas.width, h = coverCanvas.height;
+  var samples = [
+    { arr: atmosOuterColorArr, count: ATMOS_OUTER_COUNT, bright: 0.85 },
+    { arr: atmosMidColorArr,   count: ATMOS_MID_COUNT,   bright: 0.95 },
+    { arr: atmosNearColorArr,  count: ATMOS_NEAR_COUNT,  bright: 1.05 },
+  ];
+  for (var s = 0; s < samples.length; s++) {
+    var sa = samples[s];
+    for (var i = 0; i < sa.count; i++) {
+      var sx = Math.floor(Math.random() * w);
+      var sy = Math.floor(Math.random() * h);
+      var di = (sy * w + sx) * 4;
+      var lum = (img[di] * 0.299 + img[di+1] * 0.587 + img[di+2] * 0.114) / 255;
+      if (lum < 0.08) {
+        sx = Math.floor(w * (0.3 + Math.random() * 0.4));
+        sy = Math.floor(h * (0.3 + Math.random() * 0.4));
+        di = (sy * w + sx) * 4;
+      }
+      sa.arr[i*3]   = Math.min(1.0, img[di]   / 255 * sa.bright);
+      sa.arr[i*3+1] = Math.min(1.0, img[di+1] / 255 * sa.bright);
+      sa.arr[i*3+2] = Math.min(1.0, img[di+2] / 255 * sa.bright);
+    }
+  }
+  if (atmosOuterGroup) atmosOuterGroup.geometry.attributes.aColor.needsUpdate = true;
+  if (atmosMidGroup)   atmosMidGroup.geometry.attributes.aColor.needsUpdate = true;
+  if (atmosNearGroup)  atmosNearGroup.geometry.attributes.aColor.needsUpdate = true;
+}
+
+function resetAtmosColorsToIdle() {
+  if (!atmosOuterGroup || !atmosMidGroup || !atmosNearGroup) return;
+  var list = [
+    { arr: atmosOuterColorArr, count: ATMOS_OUTER_COUNT, base: 0.85 },
+    { arr: atmosMidColorArr,   count: ATMOS_MID_COUNT,   base: 0.92 },
+    { arr: atmosNearColorArr,  count: ATMOS_NEAR_COUNT,  base: 0.96 },
+  ];
+  for (var s = 0; s < list.length; s++) {
+    var sa = list[s];
+    for (var i = 0; i < sa.count; i++) {
+      var w = sa.base + (i % 23) / 23 * (1.0 - sa.base);
+      sa.arr[i*3]   = w;
+      sa.arr[i*3+1] = w;
+      sa.arr[i*3+2] = w * (0.94 + (i % 11) / 11 * 0.06);
+    }
+  }
+  if (atmosOuterGroup) atmosOuterGroup.geometry.attributes.aColor.needsUpdate = true;
+  if (atmosMidGroup)   atmosMidGroup.geometry.attributes.aColor.needsUpdate = true;
+  if (atmosNearGroup)  atmosNearGroup.geometry.attributes.aColor.needsUpdate = true;
 }
 
 // ============================================================
@@ -9987,6 +10352,7 @@ function applyCoverCanvas(cv, thumbSrc, opts) {
     if (token !== coverProcessToken || !coverApplyStillCurrent(opts)) return;
     if (floatGroup) refreshFloatColorsFromCover(cv);
     if (backCoverGroup) refreshBackCoverColorsFromCanvas(cv);
+    refreshAtmosColorsFromCover(cv);
     updateLyricPaletteFromCover(cv);
   }
 
@@ -12536,6 +12902,7 @@ function loadCoverFromUrl(directUrl, opts) {
     coverProcessToken++;
     uniforms.uHasCover.value = 0; setCoverDepthState(0, 0, 1);
     resetFloatColorsToIdle();
+    resetAtmosColorsToIdle();
     document.getElementById('album-bg').classList.remove('visible');
     document.getElementById('thumb-cover').removeAttribute('src');
     setControlCoverSrc('');
@@ -15990,6 +16357,8 @@ function ensureHomeWallpaperParticles(opts) {
   }
   if (uniforms && uniforms.uFloatAlpha) uniforms.uFloatAlpha.value = 0;
   if (floatGroup) destroyFloatLayer();
+  if (uniforms && uniforms.uAtmosAlpha) uniforms.uAtmosAlpha.value = 0;
+  destroyAtmosLayers();
 }
 function activateHomeWallpaperPreview(opts) {
   opts = opts || {};
@@ -20383,6 +20752,7 @@ function applyFxArchiveSnapshot(snapshot) {
   setPreset(targetPreset, { silent: true, preserveCamera: false, skipTransition: false, noSave: true, commitPlaybackPreset: true });
   applyCoverParticleResolution(fx.coverResolution, { reload: true });
   if (fx.floatLayer) createFloatLayer(); else destroyFloatLayer();
+  if (fx.atmosParticles) createAtmosLayers(); else destroyAtmosLayers();
   setParticleLyricsSilently(fx.particleLyrics);
   if (fx.backCover) createBackCoverLayer(); else destroyBackCoverLayer();
   if (fx.aiDepth) {
@@ -22455,6 +22825,7 @@ function toggleFx(key) {
   syncFxUniforms();
   if (key === 'lyricCameraLock' || key === 'lyricGlow' || key === 'lyricGlowBeat' || key === 'lyricGlowParticles' || key === 'bloom' || key === 'edge' || key === 'cinema' || key === 'desktopLyrics' || key === 'desktopLyricsClickThrough' || key === 'desktopLyricsCinema' || key === 'desktopLyricsHighlight' || key === 'wallpaperMode' || key === 'shelfShowPodcasts' || key === 'shelfMergeCollections' || key === 'liveBackgroundKeep') saveLyricLayout();
   if (key === 'floatLayer') { if (fx.floatLayer) createFloatLayer(); else destroyFloatLayer(); }
+  if (key === 'atmosParticles') { fx.atmosParticles ? createAtmosLayers() : destroyAtmosLayers(); }
   if (key === 'desktopLyrics') applyDesktopLyricsState(true);
   if (key === 'desktopLyricsClickThrough' || key === 'desktopLyricsCinema' || key === 'desktopLyricsHighlight') pushDesktopLyricsState(true);
   if (key === 'lyricGlow' || key === 'lyricGlowBeat' || key === 'lyricGlowParticles') pushDesktopLyricsState(true);
@@ -22541,6 +22912,7 @@ function resetFx() {
   setStageLyricPalette(stageLyrics.coverPalette || stageLyrics.palette);
   setPreset(fx.preset, { silent: true, preserveCamera: true, skipTransition: true });
   if (fx.floatLayer) createFloatLayer(); else destroyFloatLayer();
+  if (fx.atmosParticles) createAtmosLayers(); else destroyAtmosLayers();
   if (shelfManager && shelfManager.rebuild) shelfManager.rebuild(true);
   if (shelfManager && shelfManager.refreshTheme) shelfManager.refreshTheme();
   saveLyricLayout();
@@ -26681,6 +27053,7 @@ setShelfMode(fx.shelf);
 applyStartupStarfieldPreset();
 applyPlaylistPanelPinState(false);
 if (fx.floatLayer) createFloatLayer();
+if (fx.atmosParticles) createAtmosLayers();
 if (fx.particleLyrics) createLyricsParticles();
 if (fx.backCover) createBackCoverLayer();
 initIdleGuideCanvas();
@@ -26991,6 +27364,8 @@ function animate() {
 
   updateRipples(dt);
   updateFloatLayer(dt);
+  var atmosTarget = (fx.atmosParticles && atmosOuterGroup) ? 1.0 : 0.0;
+  uniforms.uAtmosAlpha.value += (atmosTarget - uniforms.uAtmosAlpha.value) * Math.min(1, 0.035 * Math.max(1, dt * 60));
   if (shelfManager) shelfManager.update(dt);
   tickLyricsParticles();
   updateHomeAudioVisual(dt);
