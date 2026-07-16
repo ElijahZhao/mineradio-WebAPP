@@ -7269,9 +7269,9 @@ function resetFloatColorsToIdle() {
 //   - 近景漂浮: 封面周围, 大粒子辉光, 受低频驱动
 //   全部 AdditiveBlending, 不影响核心粒子转墙
 // ============================================================
-var ATMOS_OUTER_COUNT = 2000;
-var ATMOS_MID_COUNT   = 1500;
-var ATMOS_NEAR_COUNT  = 800;
+var ATMOS_OUTER_COUNT = 3000;
+var ATMOS_MID_COUNT   = 2500;
+var ATMOS_NEAR_COUNT  = 1200;
 var atmosOuterGroup = null, atmosMidGroup = null, atmosNearGroup = null;
 var atmosOuterColorArr = null, atmosMidColorArr = null, atmosNearColorArr = null;
 
@@ -7292,10 +7292,24 @@ function createAtmosLayers() {
     oPos[i*3]   = r * Math.sin(phi) * Math.cos(theta);
     oPos[i*3+1] = r * Math.sin(phi) * Math.sin(theta) * 0.82;
     oPos[i*3+2] = r * Math.cos(phi);
-    var white = 0.80 + Math.random() * 0.20;
-    oCol[i*3]   = white;
-    oCol[i*3+1] = white;
-    oCol[i*3+2] = white * (0.92 + Math.random() * 0.08);
+    var colorType = Math.random();
+    if (colorType < 0.35) {
+      oCol[i*3]   = 0.45 + Math.random() * 0.25;
+      oCol[i*3+1] = 0.70 + Math.random() * 0.25;
+      oCol[i*3+2] = 1.0;
+    } else if (colorType < 0.65) {
+      oCol[i*3]   = 0.75 + Math.random() * 0.25;
+      oCol[i*3+1] = 0.85 + Math.random() * 0.15;
+      oCol[i*3+2] = 0.95 + Math.random() * 0.05;
+    } else if (colorType < 0.85) {
+      oCol[i*3]   = 0.65 + Math.random() * 0.25;
+      oCol[i*3+1] = 0.55 + Math.random() * 0.25;
+      oCol[i*3+2] = 1.0;
+    } else {
+      oCol[i*3]   = 1.0;
+      oCol[i*3+1] = 0.80 + Math.random() * 0.20;
+      oCol[i*3+2] = 0.60 + Math.random() * 0.20;
+    }
     oRnd[i] = Math.random();
     oPhs[i*2]   = Math.random() * Math.PI * 2;
     oPhs[i*2+1] = Math.random() * Math.PI * 2;
@@ -7370,24 +7384,28 @@ function createAtmosLayers() {
   var mPhs = new Float32Array(ATMOS_MID_COUNT * 3);
   var mLane = new Float32Array(ATMOS_MID_COUNT);
   for (var j = 0; j < ATMOS_MID_COUNT; j++) {
-    var lane = Math.floor(Math.random() * 5);
-    var laneAngle = lane * (Math.PI * 2 / 5) + Math.random() * 0.4 - 0.2;
-    var rr = 4.5 + Math.random() * 2.8;
-    var tilt = (Math.random() - 0.5) * 0.6;
+    var lane = Math.floor(Math.random() * 8);
+    var laneAngle = lane * (Math.PI * 2 / 8) + Math.random() * 0.35 - 0.175;
+    var rr = 4.0 + Math.random() * 3.2;
+    var tilt = (Math.random() - 0.5) * 0.7;
     mPos[j*3]   = Math.cos(laneAngle) * rr;
-    mPos[j*3+1] = (Math.random() - 0.5) * 2.2 + tilt * rr * 0.3;
+    mPos[j*3+1] = (Math.random() - 0.5) * 2.4 + tilt * rr * 0.35;
     mPos[j*3+2] = Math.sin(laneAngle) * rr;
     var tint = Math.random();
-    if (tint < 0.5) {
-      mCol[j*3] = 0.6 + Math.random() * 0.3;
-      mCol[j*3+1] = 0.85 + Math.random() * 0.15;
+    if (tint < 0.35) {
+      mCol[j*3] = 0.5 + Math.random() * 0.35;
+      mCol[j*3+1] = 0.75 + Math.random() * 0.25;
       mCol[j*3+2] = 1.0;
-    } else if (tint < 0.8) {
+    } else if (tint < 0.65) {
       mCol[j*3] = 1.0;
-      mCol[j*3+1] = 0.82 + Math.random() * 0.12;
-      mCol[j*3+2] = 0.55 + Math.random() * 0.15;
+      mCol[j*3+1] = 0.75 + Math.random() * 0.2;
+      mCol[j*3+2] = 0.45 + Math.random() * 0.25;
+    } else if (tint < 0.85) {
+      mCol[j*3] = 0.7 + Math.random() * 0.3;
+      mCol[j*3+1] = 0.6 + Math.random() * 0.3;
+      mCol[j*3+2] = 1.0;
     } else {
-      mCol[j*3] = 0.95;
+      mCol[j*3] = 0.9;
       mCol[j*3+1] = 0.95;
       mCol[j*3+2] = 1.0;
     }
@@ -7472,18 +7490,32 @@ function createAtmosLayers() {
   var nBase = new Float32Array(ATMOS_NEAR_COUNT * 3);
   for (var k = 0; k < ATMOS_NEAR_COUNT; k++) {
     var a = Math.random() * Math.PI * 2;
-    var rad = 2.0 + Math.pow(Math.random(), 0.6) * 2.0;
-    var ny = (Math.random() - 0.5) * 2.6;
-    var nz = (Math.random() - 0.5) * 1.8;
+    var rad = 1.8 + Math.pow(Math.random(), 0.5) * 2.2;
+    var ny = (Math.random() - 0.5) * 2.8;
+    var nz = (Math.random() - 0.5) * 2.0;
     var bx = Math.cos(a) * rad;
     var by = ny;
     var bz = Math.sin(a) * rad + nz * 0.4;
     nBase[k*3]   = bx; nBase[k*3+1] = by; nBase[k*3+2] = bz;
     nPos[k*3]   = bx; nPos[k*3+1] = by; nPos[k*3+2] = bz;
-    var w = 0.9 + Math.random() * 0.1;
-    nCol[k*3]   = w;
-    nCol[k*3+1] = w;
-    nCol[k*3+2] = w * (0.95 + Math.random() * 0.05);
+    var colorType = Math.random();
+    if (colorType < 0.35) {
+      nCol[k*3]   = 0.7 + Math.random() * 0.3;
+      nCol[k*3+1] = 0.85 + Math.random() * 0.15;
+      nCol[k*3+2] = 1.0;
+    } else if (colorType < 0.65) {
+      nCol[k*3]   = 1.0;
+      nCol[k*3+1] = 0.8 + Math.random() * 0.2;
+      nCol[k*3+2] = 0.55 + Math.random() * 0.3;
+    } else if (colorType < 0.85) {
+      nCol[k*3]   = 0.85 + Math.random() * 0.15;
+      nCol[k*3+1] = 0.7 + Math.random() * 0.3;
+      nCol[k*3+2] = 1.0;
+    } else {
+      nCol[k*3]   = 0.95;
+      nCol[k*3+1] = 0.95;
+      nCol[k*3+2] = 1.0;
+    }
     nRnd[k] = Math.random();
     nPhs[k*3]   = Math.random() * Math.PI * 2;
     nPhs[k*3+1] = Math.random() * Math.PI * 2;
@@ -7509,18 +7541,22 @@ function createAtmosLayers() {
       pos.x += sin(uTime * (0.28 + aRand * 0.22) + aPhase.x) * 0.42;
       pos.y += cos(uTime * (0.24 + aRand * 0.20) + aPhase.y) * 0.38;
       pos.z += sin(uTime * (0.20 + aRand * 0.18) + aPhase.z) * 0.55;
-      float bassBreath = 1.0 + uBass * 0.32 * (0.7 + aRand * 0.3);
+      float bassBreath = 1.0 + uBass * 0.45 * (0.6 + aRand * 0.4);
       pos.xyz *= bassBreath;
-      float beatJump = uBeat * 0.25 * sin(aRand * 40.0);
+      float beatJump = uBeat * 0.35 * sin(aRand * 40.0);
       pos.y += beatJump;
-      float energyGlow = 0.72 + uEnergy * 0.8 * (0.5 + aRand * 0.5);
-      float beatFlash = 1.0 + uBeat * 0.35 * step(0.7, fract(aRand * 13.0));
-      vC = aColor * energyGlow * beatFlash;
+      float bassPulse = uBass * 0.15 * sin(uTime * 2.0 + aPhase.x);
+      pos.x += bassPulse;
+      float energyGlow = 0.72 + uEnergy * 0.9 * (0.5 + aRand * 0.5);
+      float beatFlash = 1.0 + uBeat * 0.45 * step(0.7, fract(aRand * 13.0));
+      float trebleGlow = 1.0 + smoothstep(0.3, 0.8, uEnergy) * 0.3;
+      vC = aColor * energyGlow * beatFlash * trebleGlow;
       vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
       float dist = max(0.35, -mvPos.z);
       float twink = 0.60 + 0.40 * sin(uTime * (0.7 + aRand * 0.9) + aPhase.x * 1.5);
       vA = clamp(0.28 + (4.5 - dist) * 0.09, 0.08, 0.75) * twink;
       float sz = clamp(58.0 / dist, 2.0, 7.0);
+      sz *= (1.0 + uBass * 0.25);
       gl_PointSize = sz * uPixel;
       gl_Position = projectionMatrix * mvPos;
     }
